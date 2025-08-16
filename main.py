@@ -8,6 +8,13 @@ import httpx
 
 app = FastAPI()
 
+@app.middleware("http")
+async def add_client_ip(request: Request, call_next):
+    client_ip = request.client.host
+    request.state.client_ip = client_ip
+    response = await call_next(request)
+    return response
+
 # In-memory storage
 vouches = []  # Each vouch: {id, ip, username, message, type, timestamp, session_id, expires}
 sessions = {}  # session_id: {vouch_id, expires, ip}
@@ -96,8 +103,10 @@ async def check_message_llm7(message: str) -> bool:
         content = result["choices"][0]["message"]["content"].strip().upper()
         return content == "OK"
 
+# Update /vouch endpoint to use automatic IP
 @app.post("/vouch")
-async def vouch(request: Request, vouch: VouchRequest, ip: str = Header(...), username: str = Header(...)):
+async def vouch(request: Request, vouch: VouchRequest, username: str = Header(...)):
+    ip = request.state.client_ip
     now = time.time()
     # Rate limit
     recent = [v for v in vouches if v["ip"] == ip and v["username"] == username and now - v["timestamp"] < 3600]
@@ -128,8 +137,10 @@ async def vouch(request: Request, vouch: VouchRequest, ip: str = Header(...), us
     sessions[session_id] = {"vouch_id": vouch_id, "expires": expires, "ip": ip}
     return {"success": True, "session_id": session_id}
 
+# Update /checkvouch endpoint to use automatic IP
 @app.get("/checkvouch")
-async def checkvouch(ip: str = Header(...), username: str = Header(...)):
+async def checkvouch(request: Request, username: str = Header(...)):
+    ip = request.state.client_ip
     user_vouches = [v for v in vouches if v["ip"] == ip and v["username"] == username]
     total = len([v for v in user_vouches if v["type"] == "vouch"])
     scam = len([v for v in user_vouches if v["type"] == "scam vouch"])
