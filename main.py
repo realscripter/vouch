@@ -113,13 +113,13 @@ async def check_message_llm7(message: str) -> bool:
         content = result["choices"][0]["message"]["content"].strip().upper()
         return content == "OK"
 
-# Update /vouch endpoint to prevent multiple vouches for the same person from the same IP
+# Update /vouch endpoint to support usernames with a dot (.) for Bedrock users
 @app.post("/vouch")
 async def vouch(request: Request, vouch: VouchRequest, username: str = Header(...)):
     ip = request.state.client_ip
     now = time.time()
     # Check if the same IP has already vouched for the same username
-    existing_vouch = next((v for v in vouches if v["ip"] == ip and v["username"] == username), None)
+    existing_vouch = next((v for v in vouches if v["ip"] == ip and v["username"].lower() == username.lower()), None)
     if existing_vouch:
         return JSONResponse({"success": False, "error": "You have already vouched for this user from this IP"}, status_code=400)
     # LLM7 check
