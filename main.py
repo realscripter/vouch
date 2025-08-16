@@ -113,18 +113,21 @@ async def check_message_llm7(message: str) -> bool:
         content = result["choices"][0]["message"]["content"].strip().upper()
         return content == "OK"
 
-# Update /vouch endpoint to skip rate limiting if the message contains bad words
+# Update /vouch endpoint to prevent multiple vouches for the same person from the same IP
 @app.post("/vouch")
 async def vouch(request: Request, vouch: VouchRequest, username: str = Header(...)):
     ip = request.state.client_ip
     now = time.time()
+    # Check if the same IP has already vouched for the same username
+    existing_vouch = next((v for v in vouches if v["ip"] == ip and v["username"] == username), None)
+    if existing_vouch:
+        return JSONResponse({"success": False, "error": "You have already vouched for this user from this IP"}, status_code=400)
     # LLM7 check
     valid = await check_message_llm7(vouch.message)
     if not valid:
-        # Skip rate limiting if the message contains bad words
         return JSONResponse({"success": False, "error": "Message violates rules"}, status_code=400)
     # Rate limit
-    recent = [v for v in vouches if v["ip"] == ip and v["username"] == username and now - v["timestamp"] < 3600]
+    recent = [v for v in vouches if v["ip"] == ip and now - v["timestamp"] < 3600]
     if len(recent) >= RATE_LIMIT:
         return JSONResponse({"success": False, "error": "Rate limited"}, status_code=429)
     if len(vouch.message) > 250:
