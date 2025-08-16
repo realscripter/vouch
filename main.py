@@ -103,11 +103,16 @@ async def check_message_llm7(message: str) -> bool:
         content = result["choices"][0]["message"]["content"].strip().upper()
         return content == "OK"
 
-# Update /vouch endpoint to use automatic IP
+# Update /vouch endpoint to skip rate limiting if the message contains bad words
 @app.post("/vouch")
 async def vouch(request: Request, vouch: VouchRequest, username: str = Header(...)):
     ip = request.state.client_ip
     now = time.time()
+    # LLM7 check
+    valid = await check_message_llm7(vouch.message)
+    if not valid:
+        # Skip rate limiting if the message contains bad words
+        return JSONResponse({"success": False, "error": "Message violates rules"}, status_code=400)
     # Rate limit
     recent = [v for v in vouches if v["ip"] == ip and v["username"] == username and now - v["timestamp"] < 3600]
     if len(recent) >= RATE_LIMIT:
@@ -116,10 +121,6 @@ async def vouch(request: Request, vouch: VouchRequest, username: str = Header(..
         return JSONResponse({"success": False, "error": "Message too long"}, status_code=400)
     if vouch.type not in ["scam vouch", "vouch"]:
         return JSONResponse({"success": False, "error": "Invalid type"}, status_code=400)
-    # LLM7 check
-    valid = await check_message_llm7(vouch.message)
-    if not valid:
-        return JSONResponse({"success": False, "error": "Message violates rules"}, status_code=400)
     vouch_id = str(uuid.uuid4())
     session_id = str(uuid.uuid4())
     expires = now + SESSION_DURATION
