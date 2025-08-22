@@ -1,3 +1,16 @@
+# Check if sessionid is affected by moderation
+@app.get("/sessionidcheck")
+async def sessionid_check(sessionid: str):
+    session = sessions.get(sessionid)
+    if not session:
+        return {"state": "invalid"}
+    vouch_id = session["vouch_id"]
+    vouch = next((v for v in vouches if v["id"] == vouch_id), None)
+    if vouch:
+        for r in reports:
+            if r["message_id"] == vouch["message_id"] and r["status"] == "accepted":
+                return {"state": "moderation"}
+    return {"state": ""}
 from fastapi import FastAPI, Header, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
