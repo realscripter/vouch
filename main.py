@@ -210,6 +210,10 @@ async def report_message(req: ReportRequest, request: Request):
         return {"success": False, "error": "Report reason too long"}
     for v in vouches:
         if v["message_id"] == req.messageid:
+            # Check if already reported and accepted
+            for r in reports:
+                if r["message_id"] == req.messageid and r["status"] == "accepted":
+                    return {"success": False, "error": "Already moderated and accepted"}
             if v.get("hidden", False):
                 return {"success": False, "error": "Already reported"}
             v["hidden"] = True
@@ -225,6 +229,16 @@ async def report_message(req: ReportRequest, request: Request):
             save_data({"vouches": vouches, "sessions": sessions, "reports": reports})
             return {"success": True, "report_id": report_id}
     return {"success": False, "error": "Message not found"}
+# Simple admin endpoints
+@app.get("/checkifreported")
+async def check_if_reported(messageid: str):
+    for r in reports:
+        if r["message_id"] == messageid:
+            if r["status"] == "accepted":
+                return {"state": "Beenmoderated"}
+            else:
+                return {"state": "Moderation"}
+    return {"state": "NotReported"}
 def check_admin_password(pw: str) -> bool:
     with open("admin_password.txt", "r") as f:
         return f.read().strip() == pw
