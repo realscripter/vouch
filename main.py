@@ -1,14 +1,14 @@
 # Decline a report and unhide the message
+
+# Remade decline: sets status to declined and blocks further reports
 @app.api_route("/admin/decline", methods=["GET", "POST"])
 async def admin_decline(report_id: str = None, request: Request = None):
-    # Support GET and POST, get report_id from query or body
     if request is None:
         from fastapi import Request as FastAPIRequest
         request = FastAPIRequest
     password = request.headers.get("password")
     if not check_admin_password(password):
         return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
-    # Get report_id from query if GET
     if report_id is None:
         if request.method == "GET":
             report_id = request.query_params.get("report_id")
@@ -21,6 +21,7 @@ async def admin_decline(report_id: str = None, request: Request = None):
                 if v["message_id"] == r["message_id"]:
                     v["hidden"] = False
                     r["status"] = "declined"
+                    v["declined"] = True
                     save_data({"vouches": vouches, "sessions": sessions, "reports": reports})
                     return {"success": True}
     return {"success": False, "error": "Report not found"}
@@ -350,10 +351,10 @@ async def report_message(req: ReportRequest, request: Request):
         return {"success": False, "error": "Report reason too long"}
     for v in vouches:
         if v["message_id"] == req.messageid:
-            # Check if already reported and accepted
+            # Check if already reported and accepted or declined
             for r in reports:
-                if r["message_id"] == req.messageid and r["status"] == "accepted":
-                    return {"success": False, "error": "Already moderated and accepted"}
+                if r["message_id"] == req.messageid and r["status"] in ["accepted", "declined"]:
+                    return {"success": False, "error": "Already moderated"}
             if v.get("hidden", False):
                 return {"success": False, "error": "Already reported"}
             v["hidden"] = True
