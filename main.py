@@ -353,11 +353,13 @@ async def get_reports(request: Request):
     enriched_reports = []
     for r in reports:
         msg = None
+        username = None
         for v in vouches:
             if v["message_id"] == r["message_id"]:
                 msg = v["message"]
+                username = v["username"]
                 break
-        enriched_reports.append({**r, "message": msg})
+        enriched_reports.append({**r, "message": msg, "username": username})
     return {"success": True, "reports": enriched_reports}
 
 
