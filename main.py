@@ -1,3 +1,92 @@
+# Get countdown for sessionid
+@app.get("/vouchcountdown")
+async def vouch_countdown(sessionid: str):
+    session = sessions.get(sessionid)
+    if not session:
+        return {"success": False, "error": "invalid sessionid"}
+    left = int(session["expires"] - time.time())
+    if left < 0:
+        return {"success": False, "error": "session expired"}
+    # Check if paused due to moderation
+    vouch_id = session["vouch_id"]
+    vouch = next((v for v in vouches if v["id"] == vouch_id), None)
+    paused = False
+    if vouch:
+        for r in reports:
+            if r["message_id"] == vouch["message_id"] and r["status"] in ["pending", "accepted"]:
+                paused = True
+                break
+    return {"success": True, "seconds_left": left, "paused": paused}
+# Check if sessionid is affected by moderation
+@app.get("/sessionidcheck")
+async def sessionid_check(sessionid: str):
+    session = sessions.get(sessionid)
+    if not session:
+        return {"state": "invalid"}
+    vouch_id = session["vouch_id"]
+    vouch = next((v for v in vouches if v["id"] == vouch_id), None)
+    if vouch:
+        for r in reports:
+            if r["message_id"] == vouch["message_id"] and r["status"] == "accepted":
+                return {"state": "moderation"}
+    return {"state": ""}
+@app.post("/editvouch")
+async def editvouch(req: EditVouchRequest):
+    session = sessions.get(req.sessionid)
+    if not session:
+        return {"success": False, "error": "invalid"}
+    vouch_id = session["vouch_id"]
+    vouch = next((v for v in vouches if v["id"] == vouch_id), None)
+    # Check moderation state
+    in_moderation = False
+    for r in reports:
+        if r["message_id"] == vouch["message_id"] and r["status"] in ["pending", "accepted"]:
+            in_moderation = True
+            break
+    if in_moderation:
+        # Pause session expiration
+        session["expires"] = time.time() + 60  # Extend by 1 minute
+        return {"success": False, "error": "Session paused due to moderation"}
+    if session["ip"] != req.ip:
+        return {"success": False, "error": "no permission"}
+    if time.time() > session["expires"]:
+        return {"success": False, "error": "outoftime"}
+    if len(req.new_message) > 250:
+        return {"success": False, "error": "Message too long"}
+    valid, reason = await check_message_llm7(req.new_message)
+    if not valid:
+        return {"success": False, "error": reason or "Message violates rules"}
+    for v in vouches:
+        if v["id"] == vouch_id:
+            v["message"] = req.new_message
+            return {"success": True}
+    return {"success": False, "error": "invalid"}
+@app.post("/deletevouch")
+async def deletevouch(req: DeleteVouchRequest):
+    session = sessions.get(req.sessionid)
+    if not session:
+        return {"success": False, "error": "invalid"}
+    vouch_id = session["vouch_id"]
+    vouch = next((v for v in vouches if v["id"] == vouch_id), None)
+    # Check moderation state
+    in_moderation = False
+    for r in reports:
+        if r["message_id"] == vouch["message_id"] and r["status"] in ["pending", "accepted"]:
+            in_moderation = True
+            break
+    if in_moderation:
+        session["expires"] = time.time() + 60
+        return {"success": False, "error": "Session paused due to moderation"}
+    if session["ip"] != req.ip:
+        return {"success": False, "error": "no permission"}
+    if time.time() > session["expires"]:
+        return {"success": False, "error": "outoftime"}
+    for i, v in enumerate(vouches):
+        if v["id"] == vouch_id:
+            vouches.pop(i)
+            sessions.pop(req.sessionid)
+        return {"success": True}
+    return {"success": False, "error": "invalid"}
 # Check if sessionid is affected by moderation
 @app.get("/sessionidcheck")
 async def sessionid_check(sessionid: str):
