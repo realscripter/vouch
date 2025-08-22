@@ -1,3 +1,41 @@
+# Decline a report and unhide the message
+@app.api_route("/admin/decline", methods=["GET", "POST"])
+async def admin_decline(report_id: str = None, request: Request = None):
+    # Support GET and POST, get report_id from query or body
+    if request is None:
+        from fastapi import Request as FastAPIRequest
+        request = FastAPIRequest
+    password = request.headers.get("password")
+    if not check_admin_password(password):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    # Get report_id from query if GET
+    if report_id is None:
+        if request.method == "GET":
+            report_id = request.query_params.get("report_id")
+        else:
+            form = await request.form()
+            report_id = form.get("report_id")
+    for r in reports:
+        if r["report_id"] == report_id:
+            for v in vouches:
+                if v["message_id"] == r["message_id"]:
+                    v["hidden"] = False
+                    r["status"] = "declined"
+                    save_data({"vouches": vouches, "sessions": sessions, "reports": reports})
+                    return {"success": True}
+    return {"success": False, "error": "Report not found"}
+    password = request.headers.get("password")
+    if not check_admin_password(password):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    for r in reports:
+        if r["report_id"] == report_id:
+            for v in vouches:
+                if v["message_id"] == r["message_id"]:
+                    v["hidden"] = False
+                    r["status"] = "declined"
+                    save_data({"vouches": vouches, "sessions": sessions, "reports": reports})
+                    return {"success": True}
+    return {"success": False, "error": "Report not found"}
 # Get countdown for sessionid
 @app.get("/vouchcountdown")
 async def vouch_countdown(sessionid: str):
