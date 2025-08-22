@@ -5,6 +5,8 @@ from typing import Optional, List, Dict
 import time
 import uuid
 import httpx
+import json
+import os
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -25,9 +27,21 @@ async def add_client_ip(request: Request, call_next):
     response = await call_next(request)
     return response
 
-# In-memory storage
-vouches = []  # Each vouch: {id, ip, username, message, type, timestamp, session_id, expires}
-sessions = {}  # session_id: {vouch_id, expires, ip}
+DATA_FILE = "data.json"
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {"vouches": [], "sessions": {}, "reports": []}
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+data = load_data()
+vouches = data["vouches"]
+sessions = data["sessions"]
+reports = data["reports"]
 
 RATE_LIMIT = 3  # max vouches per hour per ip/username
 SESSION_DURATION = 1800  # 30 min in seconds
@@ -65,14 +79,15 @@ Minecraft Server Rules
 
 Chat Rules
 • No Spamming or getting others to spam
-• No Harassing
-• No Advertising or Promotion (except for the <#786066953105702932> channel)
+• No Harassing or Bullying
+• No Advertising or Promotion of other servers or services
 • No Discrimination or Hate Speech
 • No Death Threats
 • No Sharing Others Private Information
 • No Pretending to be Staff Members
 • No Ban Evasion
-• No Dumb Forum Posts
+• No Dumb Forum Posts or Spam
+• No NSFW or Inappropriate Content
 • Use common sense, so don't do things that will get you banned just because the specific rule isn't up here
 """
 
@@ -140,6 +155,7 @@ async def vouch(request: Request, vouch: VouchRequest, username: str = Header(..
     if vouch.type not in ["scam vouch", "vouch"]:
         return JSONResponse({"success": False, "error": "Invalid type"}, status_code=400)
     vouch_id = str(uuid.uuid4())
+    message_id = str(uuid.uuid4())
     session_id = str(uuid.uuid4())
     expires = now + SESSION_DURATION
     vouch_obj = {
@@ -150,11 +166,14 @@ async def vouch(request: Request, vouch: VouchRequest, username: str = Header(..
         "type": vouch.type,
         "timestamp": now,
         "session_id": session_id,
-        "expires": expires
+        "expires": expires,
+        "message_id": message_id,
+        "hidden": False
     }
     vouches.append(vouch_obj)
     sessions[session_id] = {"vouch_id": vouch_id, "expires": expires, "ip": ip}
-    return {"success": True, "session_id": session_id}
+    save_data({"vouches": vouches, "sessions": sessions, "reports": reports})
+    return {"success": True, "session_id": session_id, "message_id": message_id}
 
 # Update /checkvouch endpoint to use automatic IP
 @app.get("/checkvouch")
@@ -164,14 +183,78 @@ async def checkvouch(request: Request, username: str = Header(...)):
     total = len([v for v in user_vouches if v["type"] == "vouch"])
     scam = len([v for v in user_vouches if v["type"] == "scam vouch"])
     recent = [v for v in user_vouches if time.time() - v["timestamp"] < 3600]
-    recent_vouches = [v for v in recent if v["type"] == "vouch"]
-    recent_scam = [v for v in recent if v["type"] == "scam vouch"]
+    recent_vouches = [v for v in recent if v["type"] == "vouch" and not v.get("hidden")]
+    recent_scam = [v for v in recent if v["type"] == "scam vouch" and not v.get("hidden")]
     return {
         "total_vouches": total,
         "total_scam_vouches": scam,
-        "recent_vouches": [{"message": v["message"]} for v in recent_vouches],
-        "recent_scam_vouches": [{"message": v["message"]} for v in recent_scam]
+        "recent_vouches": [{"message": v["message"], "message_id": v["message_id"]} for v in recent_vouches],
+        "recent_scam_vouches": [{"message": v["message"], "message_id": v["message_id"]} for v in recent_scam]
     }
+class ReportRequest(BaseModel):
+    messageid: str
+    reason: str
+
+@app.post("/report")
+async def report_message(req: ReportRequest):
+    for v in vouches:
+        if v["message_id"] == req.messageid:
+            if v.get("hidden", False):
+                return {"success": False, "error": "Already reported"}
+            v["hidden"] = True
+            report_id = str(uuid.uuid4())
+            reports.append({
+                "report_id": report_id,
+                "message_id": req.messageid,
+                "reason": req.reason,
+                "status": "pending"
+            })
+            save_data({"vouches": vouches, "sessions": sessions, "reports": reports})
+            return {"success": True, "report_id": report_id}
+    return {"success": False, "error": "Message not found"}
+def check_admin_password(pw: str) -> bool:
+    with open("admin_password.txt", "r") as f:
+        return f.read().strip() == pw
+
+@app.get("/admin/reports")
+async def get_reports(password: str):
+    if not check_admin_password(password):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    return {"success": True, "reports": reports}
+
+@app.post("/admin/moderate")
+async def moderate_report(report_id: str, action: str, password: str):
+    if not check_admin_password(password):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    for r in reports:
+        if r["report_id"] == report_id:
+            r["status"] = action
+            # Find vouch
+            for v in vouches:
+                if v["message_id"] == r["message_id"]:
+                    if action == "accept":
+                        v["hidden"] = True
+                        # Remove session
+                        for sid, s in list(sessions.items()):
+                            if s["vouch_id"] == v["id"]:
+                                sessions.pop(sid)
+                    elif action == "decline":
+                        v["hidden"] = False
+                    elif action == "remove_message":
+                        v["message"] = "[removed by moderator]"
+                        v["hidden"] = True
+                        for sid, s in list(sessions.items()):
+                            if s["vouch_id"] == v["id"]:
+                                sessions.pop(sid)
+                    elif action == "delete":
+                        vouches.remove(v)
+                        for sid, s in list(sessions.items()):
+                            if s["vouch_id"] == v["id"]:
+                                sessions.pop(sid)
+                    break
+            save_data({"vouches": vouches, "sessions": sessions, "reports": reports})
+            return {"success": True}
+    return {"success": False, "error": "Report not found"}
 
 @app.post("/deletevouch")
 async def deletevouch(req: DeleteVouchRequest):
