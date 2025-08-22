@@ -98,7 +98,7 @@ def ping():
     return {"pong": True}
 
 async def check_message_llm7(message: str) -> bool:
-    prompt = f"Check if this message follows these rules and has no swearing. Only reply 'OK' or 'BAD'.\nRules:\n{RULES}\nMessage: {message}"
+    prompt = f"Check if this message clearly violates any rules or contains swearing. If it is mostly fine, allow it. Reply 'OK' if allowed, or 'BAD: <short reason>' if not.\nRules:\n{RULES}\nMessage: {message}"
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             LLM7_API_URL,
@@ -110,8 +110,13 @@ async def check_message_llm7(message: str) -> bool:
             timeout=5.0
         )
         result = resp.json()
-        content = result["choices"][0]["message"]["content"].strip().upper()
-        return content == "OK"
+        content = result["choices"][0]["message"]["content"].strip()
+        if content.upper() == "OK":
+            return True, None
+        if content.upper().startswith("BAD"):
+            reason = content[4:].strip() if len(content) > 4 else "Message violates rules"
+            return False, reason
+        return False, "Message violates rules"
 
 # Update /vouch endpoint to support usernames with a dot (.) for Bedrock users
 @app.post("/vouch")
@@ -123,9 +128,9 @@ async def vouch(request: Request, vouch: VouchRequest, username: str = Header(..
     if existing_vouch:
         return JSONResponse({"success": False, "error": "You have already vouched for this user from this IP"}, status_code=400)
     # LLM7 check
-    valid = await check_message_llm7(vouch.message)
+    valid, reason = await check_message_llm7(vouch.message)
     if not valid:
-        return JSONResponse({"success": False, "error": "Message violates rules"}, status_code=400)
+        return JSONResponse({"success": False, "error": reason or "Message violates rules"}, status_code=400)
     # Rate limit
     recent = [v for v in vouches if v["ip"] == ip and now - v["timestamp"] < 3600]
     if len(recent) >= RATE_LIMIT:
@@ -196,9 +201,9 @@ async def editvouch(req: EditVouchRequest):
         return {"success": False, "error": "outoftime"}
     if len(req.new_message) > 250:
         return {"success": False, "error": "Message too long"}
-    valid = await check_message_llm7(req.new_message)
+    valid, reason = await check_message_llm7(req.new_message)
     if not valid:
-        return {"success": False, "error": "Message violates rules"}
+        return {"success": False, "error": reason or "Message violates rules"}
     vouch_id = session["vouch_id"]
     for v in vouches:
         if v["id"] == vouch_id:
