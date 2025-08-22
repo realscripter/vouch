@@ -197,6 +197,8 @@ class ReportRequest(BaseModel):
 
 @app.post("/report")
 async def report_message(req: ReportRequest):
+    if len(req.reason) > 250:
+        return {"success": False, "error": "Report reason too long"}
     for v in vouches:
         if v["message_id"] == req.messageid:
             if v.get("hidden", False):
