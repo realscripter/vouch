@@ -183,20 +183,29 @@ async def checkvouch(request: Request, username: str = Header(...)):
     total = len([v for v in user_vouches if v["type"] == "vouch"])
     scam = len([v for v in user_vouches if v["type"] == "scam vouch"])
     recent = [v for v in user_vouches if time.time() - v["timestamp"] < 3600]
-    recent_vouches = [v for v in recent if v["type"] == "vouch" and not v.get("hidden")]
-    recent_scam = [v for v in recent if v["type"] == "scam vouch" and not v.get("hidden")]
+    def render_message(v):
+        if v.get("hidden"):
+            return {"message": "This message is getting moderated", "message_id": v["message_id"]}
+        return {"message": v["message"], "message_id": v["message_id"]}
+    recent_vouches = [v for v in recent if v["type"] == "vouch"]
+    recent_scam = [v for v in recent if v["type"] == "scam vouch"]
     return {
         "total_vouches": total,
         "total_scam_vouches": scam,
-        "recent_vouches": [{"message": v["message"], "message_id": v["message_id"]} for v in recent_vouches],
-        "recent_scam_vouches": [{"message": v["message"], "message_id": v["message_id"]} for v in recent_scam]
+        "recent_vouches": [render_message(v) for v in recent_vouches],
+        "recent_scam_vouches": [render_message(v) for v in recent_scam]
     }
 class ReportRequest(BaseModel):
     messageid: str
     reason: str
 
 @app.post("/report")
-async def report_message(req: ReportRequest):
+async def report_message(req: ReportRequest, request: Request):
+    ip = request.state.client_ip if hasattr(request.state, "client_ip") else "unknown"
+    now = time.time()
+    recent_reports = [r for r in reports if r.get("ip") == ip and now - r.get("timestamp", 0) < 3600]
+    if len(recent_reports) >= 5:
+        return {"success": False, "error": "Report rate limited"}
     if len(req.reason) > 250:
         return {"success": False, "error": "Report reason too long"}
     for v in vouches:
@@ -209,7 +218,9 @@ async def report_message(req: ReportRequest):
                 "report_id": report_id,
                 "message_id": req.messageid,
                 "reason": req.reason,
-                "status": "pending"
+                "status": "pending",
+                "ip": ip,
+                "timestamp": now
             })
             save_data({"vouches": vouches, "sessions": sessions, "reports": reports})
             return {"success": True, "report_id": report_id}
@@ -219,44 +230,95 @@ def check_admin_password(pw: str) -> bool:
         return f.read().strip() == pw
 
 @app.get("/admin/reports")
-async def get_reports(password: str):
+async def get_reports(request: Request):
+    password = request.headers.get("password")
     if not check_admin_password(password):
         return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
-    return {"success": True, "reports": reports}
+    enriched_reports = []
+    for r in reports:
+        msg = None
+        for v in vouches:
+            if v["message_id"] == r["message_id"]:
+                msg = v["message"]
+                break
+        enriched_reports.append({**r, "message": msg})
+    return {"success": True, "reports": enriched_reports}
 
-@app.post("/admin/moderate")
-async def moderate_report(report_id: str, action: str, password: str):
+
+# Simple admin endpoints
+@app.post("/admin/delete")
+async def admin_delete(report_id: str, request: Request):
+    password = request.headers.get("password")
     if not check_admin_password(password):
         return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
     for r in reports:
         if r["report_id"] == report_id:
-            r["status"] = action
-            # Find vouch
             for v in vouches:
                 if v["message_id"] == r["message_id"]:
-                    if action == "accept":
-                        v["hidden"] = True
-                        # Remove session
-                        for sid, s in list(sessions.items()):
-                            if s["vouch_id"] == v["id"]:
-                                sessions.pop(sid)
-                    elif action == "decline":
-                        v["hidden"] = False
-                    elif action == "remove_message":
-                        v["message"] = "[removed by moderator]"
-                        v["hidden"] = True
-                        for sid, s in list(sessions.items()):
-                            if s["vouch_id"] == v["id"]:
-                                sessions.pop(sid)
-                    elif action == "delete":
-                        vouches.remove(v)
-                        for sid, s in list(sessions.items()):
-                            if s["vouch_id"] == v["id"]:
-                                sessions.pop(sid)
-                    break
-            save_data({"vouches": vouches, "sessions": sessions, "reports": reports})
-            return {"success": True}
+                    vouches.remove(v)
+                    for sid, s in list(sessions.items()):
+                        if s["vouch_id"] == v["id"]:
+                            sessions.pop(sid)
+                    r["status"] = "deleted"
+                    save_data({"vouches": vouches, "sessions": sessions, "reports": reports})
+                    return {"success": True}
     return {"success": False, "error": "Report not found"}
+
+@app.post("/admin/removemsg")
+async def admin_removemsg(report_id: str, request: Request):
+    password = request.headers.get("password")
+    if not check_admin_password(password):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    for r in reports:
+        if r["report_id"] == report_id:
+            for v in vouches:
+                if v["message_id"] == r["message_id"]:
+                    v["message"] = "[removed by moderator]"
+                    v["hidden"] = True
+                    for sid, s in list(sessions.items()):
+                        if s["vouch_id"] == v["id"]:
+                            sessions.pop(sid)
+                    r["status"] = "removedmsg"
+                    save_data({"vouches": vouches, "sessions": sessions, "reports": reports})
+                    return {"success": True}
+    return {"success": False, "error": "Report not found"}
+
+@app.post("/admin/accept")
+async def admin_accept(report_id: str, request: Request):
+    password = request.headers.get("password")
+    if not check_admin_password(password):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    for r in reports:
+        if r["report_id"] == report_id:
+            for v in vouches:
+                if v["message_id"] == r["message_id"]:
+                    v["hidden"] = True
+                    for sid, s in list(sessions.items()):
+                        if s["vouch_id"] == v["id"]:
+                            sessions.pop(sid)
+                    r["status"] = "accepted"
+                    save_data({"vouches": vouches, "sessions": sessions, "reports": reports})
+                    return {"success": True}
+    return {"success": False, "error": "Report not found"}
+
+# Ban/unban IP endpoints
+banlist = set()
+
+@app.post("/admin/banip")
+async def admin_banip(ip: str, request: Request):
+    password = request.headers.get("password")
+    if not check_admin_password(password):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    banlist.add(ip)
+    return {"success": True}
+
+@app.post("/admin/unbanip")
+async def admin_unbanip(ip: str, request: Request):
+    password = request.headers.get("password")
+    if not check_admin_password(password):
+        return JSONResponse({"success": False, "error": "Unauthorized"}, status_code=401)
+    banlist.discard(ip)
+    return {"success": True}
 
 @app.post("/deletevouch")
 async def deletevouch(req: DeleteVouchRequest):
